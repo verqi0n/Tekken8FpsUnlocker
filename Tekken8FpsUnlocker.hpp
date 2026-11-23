@@ -1,4 +1,7 @@
 #pragma once
+#include <cmath>
+#include <cstdint>
+#include <string_view>
 
 namespace tekken8 {
 
@@ -8,7 +11,7 @@ inline constexpr double gameplayStep = static_cast<double>(1.0f / 60.0f);
 class GameplayClock {
 public:
     void addFrame(double seconds) noexcept {
-        if (seconds > 0.0)
+        if (std::isfinite(seconds) && seconds > 0.0)
             remaining_ += seconds < 10.0 ? seconds : 10.0;
     }
 
@@ -21,6 +24,58 @@ public:
 
 private:
     double remaining_ = 0.0;
+};
+
+template<class Char>
+bool isPlayableMap(std::basic_string_view<Char> name, std::basic_string_view<Char> boot) noexcept {
+    const auto slash = name.find_last_of(static_cast<Char>('/'));
+    if (slash != name.npos)
+        name.remove_prefix(slash + 1);
+    return !name.empty() && name != boot;
+}
+
+struct FrameRateFields {
+    std::uint8_t* flags;
+    float* fixed;
+    float* maximum;
+};
+
+class FrameRateOverride {
+public:
+    void apply(FrameRateFields fields, float target) noexcept {
+        if (!fields.flags || !fields.fixed || !fields.maximum || !(target > 0) || !std::isfinite(target)) {
+            restore(fields);
+            return;
+        }
+        if (fields.flags != last_.flags || (*fields.flags & fixedBit))
+            wasFixed_ = (*fields.flags & fixedBit) != 0;
+        if (fields.fixed != last_.fixed || *fields.fixed != target_)
+            nativeFixed_ = *fields.fixed;
+        if (fields.maximum != last_.maximum || *fields.maximum != target_)
+            nativeMaximum_ = *fields.maximum;
+        last_ = fields;
+        target_ = target;
+        *fields.flags &= static_cast<std::uint8_t>(~fixedBit);
+        *fields.fixed = target;
+        *fields.maximum = target;
+    }
+
+    void restore(FrameRateFields fields) noexcept {
+        // Only the current engine and console variable own valid storage.
+        if (fields.flags && fields.flags == last_.flags && wasFixed_)
+            *fields.flags |= fixedBit;
+        if (fields.fixed && fields.fixed == last_.fixed && *fields.fixed == target_)
+            *fields.fixed = nativeFixed_;
+        if (fields.maximum && fields.maximum == last_.maximum && *fields.maximum == target_)
+            *fields.maximum = nativeMaximum_;
+        last_ = {};
+    }
+
+private:
+    static constexpr std::uint8_t fixedBit = 0x40;
+    FrameRateFields last_{};
+    bool wasFixed_ = false;
+    float nativeFixed_ = 0, nativeMaximum_ = 0, target_ = 0;
 };
 
 }

@@ -25,7 +25,6 @@ constexpr DWORD maxFpsStorage = 0x09BB6B60;
 constexpr DWORD namePool = 0x099BC380;
 constexpr unsigned fixedFrameRateFlags = 0x9DC;
 constexpr unsigned fixedFrameRateValue = 0x9E0;
-constexpr std::uint8_t useFixedFrameRate = 0x40;
 
 using GameTick = void (*)(void*, double);
 std::uint8_t* image = nullptr;
@@ -53,17 +52,11 @@ bool supportedImage(const std::uint8_t* base) noexcept {
 }
 
 // The game thread reads t.MaxFPS[0], as seen in the overlay's FPSUnlockerGateway::apply (RVA 0x29580).
-void applyRenderTarget() noexcept {
+tekken8::FrameRateFields frameRateFields() noexcept {
     auto* engine = *reinterpret_cast<std::uint8_t**>(image + engineInstance);
     auto* maxFps = *reinterpret_cast<float**>(image + maxFpsStorage);
-    if (!engine || !maxFps)
-        return;
-    const float target = tekken8::monitorRefreshLimit();
-    if (target <= 0.0f)
-        return;
-    engine[fixedFrameRateFlags] &= static_cast<std::uint8_t>(~useFixedFrameRate);
-    *maxFps = target;
-    *reinterpret_cast<float*>(engine + fixedFrameRateValue) = target;
+    return {engine ? engine + fixedFrameRateFlags : nullptr,
+            engine ? reinterpret_cast<float*>(engine + fixedFrameRateValue) : nullptr, maxFps};
 }
 
 const std::uint8_t* viewportWorld() noexcept {
@@ -75,8 +68,7 @@ const std::uint8_t* viewportWorld() noexcept {
 }
 
 // The menu world can already be loaded during Boot. The overlay waits for the viewport to switch maps (RVA 0x3A606).
-bool viewportHasLeftBoot() noexcept {
-    const auto* world = viewportWorld();
+bool viewportHasLeftBoot(const std::uint8_t* world) noexcept {
     if (!world)
         return false;
     const auto* level = *reinterpret_cast<const std::uint8_t* const*>(world + 0x30);
@@ -96,13 +88,10 @@ bool viewportHasLeftBoot() noexcept {
         return false;
     const auto* entry = block + 2 * (id & 0xFFFF);
     const auto header = *reinterpret_cast<const std::uint16_t*>(entry);
-    const auto length = header >> 6;
-    if (!length || length > 1023)
-        return false;
-    if (length != 4)
-        return true;
-    return (header & 1) ? std::memcmp(entry + 2, L"Boot", 4 * sizeof(wchar_t)) != 0
-                        : std::memcmp(entry + 2, "Boot", 4) != 0;
+    const auto length = static_cast<std::size_t>(header >> 6);
+    if (header & 1)
+        return tekken8::isPlayableMap<wchar_t>({reinterpret_cast<const wchar_t*>(entry + 2), length}, L"Boot");
+    return tekken8::isPlayableMap<char>({reinterpret_cast<const char*>(entry + 2), length}, "Boot");
 }
 
 void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
@@ -112,37 +101,50 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
         return;
     }
 
-    static bool ready = false;
-    if (!ready) {
+    static const void* activeWorld = nullptr;
+    static void* activeGameplay = nullptr;
+    static tekken8::GameplayClock clock;
+    static tekken8::FrameRateOverride frameRate;
+    const auto leaveWorld = [&] {
+        clock = {};
+        activeWorld = nullptr;
+        activeGameplay = nullptr;
+        tekken8::updateVisualWorld(image, nullptr);
+        frameRate.restore(frameRateFields());
+    };
+
+    const auto* world = viewportWorld();
+    if (!viewportHasLeftBoot(world)) {
+        if (activeWorld)
+            leaveWorld();
         originalTick(gameplay, seconds);
-        ready = viewportHasLeftBoot();
         return;
     }
 
-    // This dispatcher runs serially on the game thread. A scene transition
-    // may destroy the singleton inside a tick, including during catch-up.
-    static void* previous = nullptr;
-    static tekken8::GameplayClock clock;
-    if (previous != gameplay) {
-        clock = {};
-        previous = gameplay;
+    if (world != activeWorld || gameplay != activeGameplay) {
+        if (activeWorld)
+            leaveWorld();
+        activeWorld = world;
+        activeGameplay = gameplay;
+        // Loading time belongs to the previous scene.
+        if (std::isfinite(seconds) && seconds > tekken8::gameplayStep)
+            seconds = tekken8::gameplayStep;
     }
-    tekken8::updateVisualWorld(image, viewportWorld());
+    tekken8::updateVisualWorld(image, world);
     clock.addFrame(seconds);
     while (clock.takeStep()) {
         LARGE_INTEGER start{};
         QueryPerformanceCounter(&start);
         originalTick(gameplay, tekken8::gameplayStep);
-        if (gameplay != *instance) {
-            previous = nullptr;
-            tekken8::updateVisualWorld(image, nullptr);
-            break;
+        if (gameplay != *instance || world != viewportWorld()) {
+            leaveWorld();
+            return;
         }
         // Publish the completed tick using its start time, as the overlay does.
         tekken8::completeVisualTick(start.QuadPart);
     }
     // Tekken reapplies its cap on scene changes. Refresh even on a zero-tick frame.
-    applyRenderTarget();
+    frameRate.apply(frameRateFields(), tekken8::monitorRefreshLimit());
 }
 
 BOOL CALLBACK install(PINIT_ONCE, PVOID, PVOID*) {
@@ -161,18 +163,16 @@ BOOL CALLBACK install(PINIT_ONCE, PVOID, PVOID*) {
         return TRUE;
     image = base;
     originalTick = reinterpret_cast<GameTick>(expected);
-    if (!tekken8::installVisualInterpolation(base))
-        return TRUE;
-
     DWORD protection;
-    if (VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &protection)) {
+    if (!VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &protection))
+        return TRUE;
+    if (tekken8::installVisualInterpolation(base)) {
         const auto replaced = InterlockedCompareExchangePointer(slot, reinterpret_cast<void*>(&pacedTick), expected);
-        DWORD ignored;
-        VirtualProtect(slot, sizeof *slot, protection, &ignored);
-        if (replaced == expected)
-            return TRUE;
+        if (replaced != expected)
+            tekken8::uninstallVisualInterpolation();
     }
-    tekken8::uninstallVisualInterpolation();
+    DWORD ignored;
+    VirtualProtect(slot, sizeof *slot, protection, &ignored);
     return TRUE;
 }
 } // namespace

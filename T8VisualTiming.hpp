@@ -11,8 +11,6 @@ struct VisualFrame {
 };
 
 VisualFrame visualFrame() noexcept;
-bool isFighterActor(const void* actor) noexcept;
-bool isFighterMesh(const void* component) noexcept;
 
 bool installVisualInterpolation(std::uint8_t* image) noexcept;
 void uninstallVisualInterpolation() noexcept;

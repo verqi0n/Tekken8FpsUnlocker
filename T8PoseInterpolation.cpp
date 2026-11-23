@@ -8,6 +8,7 @@
 #include <mutex>
 #include <new>
 #include <vector>
+#include "T8FighterTargets.hpp"
 #include "T8PoseInterpolation.hpp"
 #include "T8VisualTiming.hpp"
 
@@ -37,6 +38,7 @@ BlendTransform blendTransform = nullptr;
 
 struct PoseHistory {
     const void* component = nullptr;
+    std::uint64_t identity = 0;
     const void* mesh = nullptr;
     const void* animation = nullptr;
     int lod = 0;
@@ -61,14 +63,18 @@ PoseHistory& historyFor(const void* component, std::uint64_t scene) noexcept {
 }
 
 void interpolatePose(const void* component, const void* mesh, const void* animation,
-                     bool evaluated, PoseArray& pose, const VisualFrame& frame) {
+                     bool evaluated, PoseArray& pose, const VisualFrame& evaluationStart, std::uint64_t identity) {
+    std::lock_guard<std::mutex> lock(historyMutex);
+    const auto frame = visualFrame();
+    if (frame.scene != evaluationStart.scene || frame.tick != evaluationStart.tick ||
+        fighterMeshIdentity(component) != identity)
+        return;
     // GetPredictedLODLevel reads this int in the supported build (0x4B16E65).
     const int lod = *reinterpret_cast<const int*>(static_cast<const std::uint8_t*>(component) + 0x790);
     const auto count = static_cast<std::size_t>(pose.count);
     const auto bytes = count * sizeof(Transform);
-    std::lock_guard<std::mutex> lock(historyMutex);
     auto& h = historyFor(component, frame.scene);
-    const bool sameMesh = h.component == component && h.scene == frame.scene && h.mesh == mesh &&
+    const bool sameMesh = h.component == component && h.identity == identity && h.scene == frame.scene && h.mesh == mesh &&
                           h.animation == animation && h.lod == lod && h.current.size() == count;
     if (sameMesh && frame.tick < h.tick)
         return;
@@ -81,6 +87,7 @@ void interpolatePose(const void* component, const void* mesh, const void* animat
         h.current.assign(pose.data, pose.data + count);
         h.mesh = mesh;
         h.component = component;
+        h.identity = identity;
         h.animation = animation;
         h.lod = lod;
         h.scene = frame.scene;
@@ -113,17 +120,15 @@ void interpolatePose(const void* component, const void* mesh, const void* animat
 
 void processPose(void* component, void* mesh, void* animation, bool evaluate, PoseArray* spaceBases,
                  void* boneSpace, void* rootTranslation, void* curves, void* attributes) {
-    const VisualFrame start = visualFrame();
+    const auto identity = fighterMeshIdentity(component);
+    const VisualFrame start = identity ? visualFrame() : VisualFrame{};
     reinterpret_cast<ProcessPose>(originalPose)(component, mesh, animation, evaluate, spaceBases,
                                                boneSpace, rootTranslation, curves, attributes);
     if (start.tick == 0 || !component || !mesh || !spaceBases || !spaceBases->data ||
-        spaceBases->count <= 0 || spaceBases->count > spaceBases->capacity || !isFighterMesh(component))
-        return;
-    const VisualFrame end = visualFrame();
-    if (start.scene != end.scene || start.tick != end.tick)
+        spaceBases->count <= 0 || spaceBases->count > spaceBases->capacity)
         return;
     try {
-        interpolatePose(component, mesh, animation, evaluate, *spaceBases, end);
+        interpolatePose(component, mesh, animation, evaluate, *spaceBases, start, identity);
     } catch (const std::bad_alloc&) {
         // The output still contains the native pose if allocating history fails.
     }

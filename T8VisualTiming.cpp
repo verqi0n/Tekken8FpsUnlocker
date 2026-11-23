@@ -22,15 +22,15 @@ double countsPerStep = 0;
 }
 
 VisualFrame visualFrame() noexcept {
+    LARGE_INTEGER now{};
     AcquireSRWLockShared(&timingLock);
     VisualFrame result{scene, tick, 0};
     const auto stamp = started;
-    ReleaseSRWLockShared(&timingLock);
-    if (result.tick != 0) {
-        LARGE_INTEGER now;
+    if (result.tick != 0)
         QueryPerformanceCounter(&now);
+    ReleaseSRWLockShared(&timingLock);
+    if (result.tick != 0)
         result.alpha = std::clamp(static_cast<double>(now.QuadPart - stamp) / countsPerStep, 0.0, 1.0);
-    }
     return result;
 }
 
@@ -84,14 +84,19 @@ bool installVisualInterpolation(std::uint8_t* image) noexcept {
         }
     }
     if (MH_ApplyQueued() != MH_OK) {
-        MH_Uninitialize();
+        // Earlier entries in the batch may already have run on another thread.
+        uninstallVisualInterpolation();
         return false;
     }
     return true;
 }
 
 void uninstallVisualInterpolation() noexcept {
-    MH_Uninitialize();
+    // Installation rollback runs before the tick hook publishes its first frame.
+    // MinHook can restore the entry points but cannot join active detours. Keep
+    // their original-call trampolines alive with this pinned ASI, even if an
+    // entry point cannot be restored and must keep calling through.
+    MH_DisableHook(MH_ALL_HOOKS);
 }
 
 } // namespace tekken8

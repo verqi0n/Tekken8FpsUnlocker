@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include "T8ActorInterpolation.hpp"
+#include "T8FighterTargets.hpp"
 #include "T8VisualTiming.hpp"
 
 namespace tekken8 {
@@ -50,13 +51,19 @@ bool finite(const Triple& value) noexcept {
 // Sample once per gameplay tick so render callbacks cannot overwrite the endpoints.
 struct History {
     const void* owner = nullptr;
+    const void* target = nullptr;
+    std::uint64_t objectId = 0;
     std::uint64_t scene = 0;
     std::uint64_t tick = 0;
     Transform previous{}, current{};
 
-    Transform sample(const void* object, const VisualFrame& frame, const Transform& source) noexcept {
-        if (owner != object || scene != frame.scene || (tick != frame.tick && frame.tick - tick != 1)) {
+    Transform sample(const void* object, const void* subject, std::uint64_t identity,
+                     const VisualFrame& frame, const Transform& source) noexcept {
+        if (owner != object || target != subject || objectId != identity || scene != frame.scene ||
+            (tick != frame.tick && frame.tick - tick != 1)) {
             owner = object;
+            target = subject;
+            objectId = identity;
             scene = frame.scene;
             tick = frame.tick;
             previous = current = source;
@@ -85,6 +92,13 @@ struct History {
     }
 };
 
+// Ordinary fighter placement also uses TeleportPhysics. A displacement over
+// two metres between samples at 60 Hz is treated as an instantaneous reposition.
+bool discontinuousMove(const Triple& from, const Triple& to) noexcept {
+    const double dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+    return dx*dx + dy*dy + dz*dz > 200.0*200.0;
+}
+
 void updateCamera(void* manager, float seconds) noexcept {
     reinterpret_cast<CameraUpdate>(originalCamera)(manager, seconds);
     const auto frame = visualFrame();
@@ -99,8 +113,13 @@ void updateCamera(void* manager, float seconds) noexcept {
     if (reinterpret_cast<std::uintptr_t>(pointerAt(camera, 0)) != imageBase() + 0x078C28F0)
         return;
     const auto* controller = pointerAt(camera, 0x298);  // APlayerCameraManager::PCOwner
-    if (!controller || pointerAt(controller, 0x350) != camera)
+    const auto* viewTarget = pointerAt(camera, 0x12D0);
+    // Leave UE in control of pending view-target blends and camera cuts.
+    if (!controller || (camera[0x5D] & 2) || pointerAt(controller, 0x350) != camera ||
+        !viewTarget || pointerAt(camera, 0x1AB0)) {
+        history.owner = nullptr;
         return;
+    }
 
     // CameraCachePrivate.POV stores location and rotation consecutively.
     Transform source;
@@ -114,39 +133,35 @@ void updateCamera(void* manager, float seconds) noexcept {
         return;
     }
 
-    const Transform view = history.sample(manager, frame, source);
+    const Transform view = history.sample(manager, viewTarget, 0, frame, source);
     std::memcpy(camera + 0x22D0, &view, sizeof view);
 }
 
 bool setActorTransform(void* actor, const Triple* position, const Triple* rotation,
                        bool sweep, void* hitResult, std::uint8_t teleport) noexcept {
     auto original = reinterpret_cast<SetActorTransform>(originalActor);
+    const auto target = fighterTarget(actor);
+    if (!target.objectId || !position || !rotation)
+        return original(actor, position, rotation, sweep, hitResult, teleport);
     const auto frame = visualFrame();
     static thread_local History fighters[2];
+    auto& state = fighters[target.slot];
     if (frame.tick == 0) {
-        fighters[0].owner = fighters[1].owner = nullptr;
+        state.owner = nullptr;
         return original(actor, position, rotation, sweep, hitResult, teleport);
     }
-    if (!actor || !position || !rotation || !isFighterActor(actor))
-        return original(actor, position, rotation, sweep, hitResult, teleport);
 
-    History* state = nullptr;
-    for (auto& candidate : fighters) {
-        if (candidate.owner == actor && candidate.scene == frame.scene) {
-            state = &candidate;
-            break;
-        }
-        if (!state || candidate.scene != frame.scene || !candidate.owner ||
-            (state->scene == frame.scene && candidate.tick < state->tick))
-            state = &candidate;
-    }
-    // Swept moves and ResetPhysics teleports need the exact destination for collision handling.
-    if (sweep || teleport == 2 || !finite(*position) || !finite(*rotation)) {
-        state->owner = nullptr;
+    const auto* root = pointerAt(actor, 0x1A0);
+    if (!root || sweep || teleport == 2 || !finite(*position) || !finite(*rotation) ||
+        (state.owner == actor && discontinuousMove(state.current.position, *position))) {
+        state.owner = nullptr;
         return original(actor, position, rotation, sweep, hitResult, teleport);
     }
-    const Transform result = state->sample(actor, frame, {*position, *rotation});
-    return original(actor, &result.position, &result.rotation, sweep, hitResult, teleport);
+    const Transform result = state.sample(actor, root, target.objectId, frame, {*position, *rotation});
+    const bool moved = original(actor, &result.position, &result.rotation, sweep, hitResult, teleport);
+    if (!moved)
+        state.owner = nullptr;
+    return moved;
 }
 
 } // namespace
