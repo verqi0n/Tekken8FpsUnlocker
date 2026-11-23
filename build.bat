@@ -8,10 +8,10 @@ if errorlevel 1 (
     goto :failed
 )
 
-cmake -S . -B build -A x64
+cmake -S . -B build -A x64 -DBUILD_TESTING=ON
 if errorlevel 1 goto :failed
 
-cmake --build build --config Release --target Tekken8FpsUnlocker --parallel
+cmake --build build --config Release --target Tekken8FpsUnlocker Tekken8CoreTests --parallel
 if errorlevel 1 goto :failed
 
 cmake -E copy_if_different "build\Release\Tekken8FpsUnlocker.asi" "Tekken8FpsUnlocker.asi"
