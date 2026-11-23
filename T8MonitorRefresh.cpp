@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <cwchar>
 #include <new>
 #include <vector>
@@ -41,11 +42,14 @@ struct Display {
     HMONITOR monitor = nullptr;
     MONITORINFOEXW info{};
     DEVMODEW mode{};
-    DISPLAY_DEVICEW panel{};
+    std::uint64_t panelIdentity = 14695981039346656037ULL;
+    unsigned panelCount = 0;
+    int desktopMonitorCount = 0;
 
     bool matches(const Display& other) const noexcept {
         return monitor == other.monitor && std::wcscmp(info.szDevice, other.info.szDevice) == 0 &&
-               std::wcscmp(panel.DeviceID, other.panel.DeviceID) == 0 &&
+               desktopMonitorCount == other.desktopMonitorCount && panelCount == other.panelCount &&
+               panelIdentity == other.panelIdentity &&
                mode.dmPelsWidth == other.mode.dmPelsWidth && mode.dmPelsHeight == other.mode.dmPelsHeight &&
                mode.dmDisplayFrequency == other.mode.dmDisplayFrequency && mode.dmBitsPerPel == other.mode.dmBitsPerPel &&
                mode.dmDisplayOrientation == other.mode.dmDisplayOrientation && mode.dmDisplayFlags == other.mode.dmDisplayFlags;
@@ -64,13 +68,21 @@ bool readDisplay(Display& display) noexcept {
         !display.mode.dmPelsWidth || !display.mode.dmPelsHeight)
         return false;
 
-    // A replacement panel can reuse the same GDI source name and resolution.
-    DISPLAY_DEVICEW child{};
-    child.cb = sizeof child;
-    for (DWORD i = 0; EnumDisplayDevicesW(display.info.szDevice, i, &child, EDD_GET_DEVICE_INTERFACE_NAME); ++i) {
-        if (child.StateFlags & DISPLAY_DEVICE_ACTIVE) {
-            display.panel = child;
+    // Switching extended displays to a virtual clone can leave this GDI source unchanged.
+    display.desktopMonitorCount = GetSystemMetrics(SM_CMONITORS);
+    // A hardware clone can add or replace a panel on the same source.
+    for (DWORD i = 0; ; ++i) {
+        DISPLAY_DEVICEW child{};
+        child.cb = sizeof child;
+        if (!EnumDisplayDevicesW(display.info.szDevice, i, &child, EDD_GET_DEVICE_INTERFACE_NAME))
             break;
+        if (!(child.StateFlags & DISPLAY_DEVICE_ACTIVE))
+            continue;
+        ++display.panelCount;
+        for (const wchar_t unit : child.DeviceID) {
+            display.panelIdentity = (display.panelIdentity ^ unit) * 1099511628211ULL;
+            if (!unit)
+                break;
         }
     }
     return true;
@@ -84,7 +96,7 @@ std::vector<DXGI_MODE_DESC1> displayModes(IDXGIOutput1* output, DXGI_FORMAT form
             break;
         std::vector<DXGI_MODE_DESC1> modes(count);
         const auto result = output->GetDisplayModeList1(format, flags, &count, modes.data());
-        if (result == DXGI_ERROR_MORE_DATA)
+        if (result == DXGI_ERROR_MORE_DATA || count > modes.size())
             continue; // The display configuration changed between the two calls.
         if (FAILED(result))
             break;
@@ -94,10 +106,64 @@ std::vector<DXGI_MODE_DESC1> displayModes(IDXGIOutput1* output, DXGI_FORMAT form
     return {};
 }
 
-float dxgiRate(const Display& display) {
+std::vector<float> outputRates(IDXGIOutput1* output, const Display& display, DXGI_MODE_ROTATION rotation) {
+    const bool rotated = rotation == DXGI_MODE_ROTATION_ROTATE90 || rotation == DXGI_MODE_ROTATION_ROTATE270;
+    std::vector<float> rates;
+    for (auto format : {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM}) {
+        for (const auto& m : displayModes(output, format)) {
+            const auto width = display.mode.dmPelsWidth, height = display.mode.dmPelsHeight;
+            const bool sizeMatches = (m.Width == width && m.Height == height) ||
+                                     (rotated && m.Width == height && m.Height == width);
+            if (sizeMatches && !m.Stereo && m.RefreshRate.Denominator &&
+                (m.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED ||
+                 m.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE)) {
+                const auto hz = static_cast<float>(static_cast<double>(m.RefreshRate.Numerator) / m.RefreshRate.Denominator);
+                if (hz > 1.0f)
+                    rates.push_back(hz);
+            }
+        }
+    }
+    std::sort(rates.begin(), rates.end());
+    rates.erase(std::unique(rates.begin(), rates.end()), rates.end());
+    return rates;
+}
+
+bool belongsToView(const DXGI_OUTPUT_DESC& output, const Display& display) noexcept {
+    if (!output.AttachedToDesktop || !output.Monitor)
+        return false;
+    if (output.Monitor == display.monitor)
+        return true;
+    // Virtual clones can have different source IDs but exactly the same desktop rectangle.
+    MONITORINFO info{};
+    info.cbSize = sizeof info;
+    return GetMonitorInfoW(output.Monitor, &info) && EqualRect(&info.rcMonitor, &display.info.rcMonitor);
+}
+
+float activeRate(const DEVMODEW& mode) noexcept {
+    return !(mode.dmDisplayFlags & DM_INTERLACED) && mode.dmDisplayFrequency > 1
+        ? static_cast<float>(mode.dmDisplayFrequency) : 0.0f;
+}
+
+struct ViewRates {
+    bool cloned;
+    float active;
+
+    float limit(float precise, float logicalMax) const noexcept {
+        if (cloned)
+            return precise > 0 ? precise : active;
+        // GDI rounds to whole Hz. Preserve e.g. 143.856 when GDI reports 144.
+        if (precise > 0 && logicalMax <= std::ceil(precise))
+            return precise;
+        return logicalMax > 0 ? logicalMax : active;
+    }
+};
+
+float dxgiRate(const Display& display, float logicalMax, ViewRates& view) {
     ComPtr<IDXGIFactory1> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.GetAddressOf()))))
         return 0;
+    std::vector<float> common;
+    unsigned outputs = 0;
     for (UINT a = 0; ; ++a) {
         ComPtr<IDXGIAdapter1> adapter;
         if (FAILED(factory->EnumAdapters1(a, adapter.GetAddressOf())))
@@ -108,29 +174,41 @@ float dxgiRate(const Display& display) {
                 break;
             DXGI_OUTPUT_DESC desc{};
             ComPtr<IDXGIOutput1> output1;
-            if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop || desc.Monitor != display.monitor ||
-                FAILED(output.As(&output1)))
+            if (FAILED(output->GetDesc(&desc)) || !belongsToView(desc, display))
                 continue;
-            const bool rotated = desc.Rotation == DXGI_MODE_ROTATION_ROTATE90 || desc.Rotation == DXGI_MODE_ROTATION_ROTATE270;
-            float best = 0;
-            for (auto format : {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM}) {
-                for (const auto& m : displayModes(output1.Get(), format)) {
-                    const auto width = display.mode.dmPelsWidth, height = display.mode.dmPelsHeight;
-                    const bool sizeMatches = (m.Width == width && m.Height == height) ||
-                                             (rotated && m.Width == height && m.Height == width);
-                    if (sizeMatches && !m.Stereo && m.RefreshRate.Denominator &&
-                        (m.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED ||
-                         m.ScanlineOrdering == DXGI_MODE_SCANLINE_ORDER_PROGRESSIVE)) {
-                        const float hz = static_cast<float>(static_cast<double>(m.RefreshRate.Numerator) /
-                                                            m.RefreshRate.Denominator);
-                        if (hz > 1.0f)
-                            best = (std::max)(best, hz);
-                    }
-                }
+            ++outputs;
+            if (outputs > 1 || desc.Monitor != display.monitor)
+                view.cloned = true;
+            if (desc.Monitor != display.monitor && desc.DeviceName[0]) {
+                DEVMODEW active{};
+                active.dmSize = sizeof active;
+                if (EnumDisplaySettingsW(desc.DeviceName, ENUM_CURRENT_SETTINGS, &active))
+                    view.active = (std::min)(view.active, activeRate(active));
             }
-            return best;
+            if (FAILED(output.As(&output1))) {
+                common.clear();
+                continue; // Check the remaining outputs for clones and their active modes.
+            }
+            auto rates = outputRates(output1.Get(), display, desc.Rotation);
+            if (!rates.empty())
+                view.active = (std::min)(view.active, rates.back());
+            if (outputs == 1)
+                common.swap(rates);
+            else
+                common.erase(std::remove_if(common.begin(), common.end(), [&](float hz) {
+                    return std::none_of(rates.begin(), rates.end(), [hz](float candidate) {
+                        return std::abs(hz - candidate) < 0.002f;
+                    });
+                }), common.end());
         }
     }
+    // A hardware clone may expose only one DXGI output. Respect the modes
+    // Windows validates for its shared source; GDI reports rates as whole Hz.
+    if (display.panelCount > outputs && logicalMax <= 0)
+        return 0;
+    for (auto it = common.rbegin(); it != common.rend(); ++it)
+        if (!view.cloned || logicalMax <= 0 || *it < logicalMax + 1.0f)
+            return *it;
     return 0;
 }
 
@@ -138,7 +216,7 @@ float gdiRate(const Display& display) noexcept {
     DWORD best = 0;
     DEVMODEW mode{};
     mode.dmSize = sizeof mode;
-    for (DWORD i = 0; EnumDisplaySettingsW(display.info.szDevice, i, &mode); ++i) {
+    for (DWORD i = 0; EnumDisplaySettingsExW(display.info.szDevice, i, &mode, 0); ++i) {
         if (mode.dmPelsWidth == display.mode.dmPelsWidth && mode.dmPelsHeight == display.mode.dmPelsHeight &&
             mode.dmBitsPerPel == display.mode.dmBitsPerPel && !(mode.dmDisplayFlags & DM_INTERLACED) &&
             mode.dmDisplayFrequency > 1)
@@ -148,7 +226,7 @@ float gdiRate(const Display& display) noexcept {
 }
 
 void CALLBACK poll(PTP_CALLBACK_INSTANCE, void*) noexcept {
-    // Only one worker can be queued. The game thread only reads publishedHz.
+    // The ASI is pinned before its tick hook is installed. nextPoll serializes workers.
     static Display last;
     static ULONGLONG recheckAt = 0;
     Display current;
@@ -161,17 +239,16 @@ void CALLBACK poll(PTP_CALLBACK_INSTANCE, void*) noexcept {
         last = current;
         const auto fallback = gdiRate(current);
         float precise = 0;
+        ViewRates view{current.panelCount > 1, activeRate(current.mode)};
         try {
-            precise = dxgiRate(current);
+            precise = dxgiRate(current, fallback, view);
         } catch (const std::bad_alloc&) {
-            // The Windows display-mode list already supplied a fallback.
+            // Use the active clone timing or the single display's Windows mode list.
         }
-        // GDI rounds to whole Hz. Preserve e.g. 143.856 when GDI reports 144.
-        hz = precise > 0 && fallback <= std::ceil(precise) ? precise : fallback;
+        // A virtual clone's GDI list can belong to only one panel.
+        hz = view.limit(precise, fallback);
         // Newly advertised modes can appear without changing the active mode or monitor identity.
-        recheckAt = now + (hz > 0 ? 60000 : 10000);
-        if (hz == 0 && !(current.mode.dmDisplayFlags & DM_INTERLACED) && current.mode.dmDisplayFrequency > 1)
-            hz = static_cast<float>(current.mode.dmDisplayFrequency);
+        recheckAt = now + (precise > 0 ? 60000 : 5000);
     }
     publishedHz.store(hz, std::memory_order_relaxed);
     nextPoll.store(GetTickCount64() + 1000, std::memory_order_release);
