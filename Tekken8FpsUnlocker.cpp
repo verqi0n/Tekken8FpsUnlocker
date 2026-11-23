@@ -2,13 +2,10 @@
 #define NOMINMAX
 #include <windows.h>
 #include <intrin.h>
-#include <atomic>
-#include <cerrno>
 #include <cstdint>
 #include <cstring>
-#include <cwchar>
-#include <string>
 #include "Tekken8FpsUnlocker.hpp"
+#include "T8MonitorRefresh.hpp"
 #include "T8VisualTiming.hpp"
 
 static_assert(sizeof(void*) == 8, "Build for x64");
@@ -29,38 +26,10 @@ constexpr DWORD namePool = 0x099BC380;
 constexpr unsigned fixedFrameRateFlags = 0x9DC;
 constexpr unsigned fixedFrameRateValue = 0x9E0;
 constexpr std::uint8_t useFixedFrameRate = 0x40;
-constexpr float defaultTarget = 300.0f;
 
 using GameTick = void (*)(void*, double);
 std::uint8_t* image = nullptr;
 GameTick originalTick = nullptr;
-float target = defaultTarget;
-std::atomic_bool visualHooksReady{false};
-
-struct Settings { float fps = defaultTarget; bool interpolation = true; };
-
-Settings readSettings() {
-    Settings settings;
-    std::wstring path(32768, L'\0');
-    const DWORD length = GetModuleFileNameW(reinterpret_cast<HMODULE>(&__ImageBase),
-                                            path.data(), static_cast<DWORD>(path.size()));
-    if (!length || length >= path.size())
-        return settings;
-    path.resize(length);
-    path.replace(path.find_last_of(L'.'), std::wstring::npos, L".ini");
-    settings.interpolation = GetPrivateProfileIntW(L"FPS", L"Interpolation", 1, path.c_str()) != 0;
-    wchar_t setting[32]{};
-    const DWORD count = GetPrivateProfileStringW(L"FPS", L"TargetFPS", L"300", setting,
-                                                  _countof(setting), path.c_str());
-    if (!count || count == _countof(setting) - 1)
-        return settings;
-    wchar_t* end = nullptr;
-    errno = 0;
-    const long fps = std::wcstol(setting, &end, 10);
-    if (end != setting && *end == L'\0' && errno != ERANGE && fps >= 0)
-        settings.fps = static_cast<float>(fps);
-    return settings;
-}
 
 bool supportedImage(const std::uint8_t* base) noexcept {
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
@@ -87,11 +56,14 @@ bool supportedImage(const std::uint8_t* base) noexcept {
 void applyRenderTarget() noexcept {
     auto* engine = *reinterpret_cast<std::uint8_t**>(image + engineInstance);
     auto* maxFps = *reinterpret_cast<float**>(image + maxFpsStorage);
-    if (engine && maxFps) {
-        engine[fixedFrameRateFlags] &= static_cast<std::uint8_t>(~useFixedFrameRate);
-        *maxFps = target;
-        *reinterpret_cast<float*>(engine + fixedFrameRateValue) = target;
-    }
+    if (!engine || !maxFps)
+        return;
+    const float target = tekken8::monitorRefreshLimit();
+    if (target <= 0.0f)
+        return;
+    engine[fixedFrameRateFlags] &= static_cast<std::uint8_t>(~useFixedFrameRate);
+    *maxFps = target;
+    *reinterpret_cast<float*>(engine + fixedFrameRateValue) = target;
 }
 
 const std::uint8_t* viewportWorld() noexcept {
@@ -155,24 +127,19 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
         clock = {};
         previous = gameplay;
     }
-    const bool interpolate = visualHooksReady.load(std::memory_order_acquire);
-    if (interpolate)
-        tekken8::updateVisualWorld(image, viewportWorld());
+    tekken8::updateVisualWorld(image, viewportWorld());
     clock.addFrame(seconds);
     while (clock.takeStep()) {
         LARGE_INTEGER start{};
-        if (interpolate)
-            QueryPerformanceCounter(&start);
+        QueryPerformanceCounter(&start);
         originalTick(gameplay, tekken8::gameplayStep);
         if (gameplay != *instance) {
             previous = nullptr;
-            if (interpolate)
-                tekken8::updateVisualWorld(image, nullptr);
+            tekken8::updateVisualWorld(image, nullptr);
             break;
         }
         // Publish the completed tick using its start time, as the overlay does.
-        if (interpolate)
-            tekken8::completeVisualTick(start.QuadPart);
+        tekken8::completeVisualTick(start.QuadPart);
     }
     // Tekken reapplies its cap on scene changes. Refresh even on a zero-tick frame.
     applyRenderTarget();
@@ -194,17 +161,18 @@ BOOL CALLBACK install(PINIT_ONCE, PVOID, PVOID*) {
         return TRUE;
     image = base;
     originalTick = reinterpret_cast<GameTick>(expected);
-    const auto settings = readSettings();
-    target = settings.fps;
+    if (!tekken8::installVisualInterpolation(base))
+        return TRUE;
 
     DWORD protection;
     if (VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &protection)) {
         const auto replaced = InterlockedCompareExchangePointer(slot, reinterpret_cast<void*>(&pacedTick), expected);
         DWORD ignored;
         VirtualProtect(slot, sizeof *slot, protection, &ignored);
-        if (replaced == expected && settings.interpolation)
-            visualHooksReady.store(tekken8::installVisualInterpolation(base), std::memory_order_release);
+        if (replaced == expected)
+            return TRUE;
     }
+    tekken8::uninstallVisualInterpolation();
     return TRUE;
 }
 } // namespace

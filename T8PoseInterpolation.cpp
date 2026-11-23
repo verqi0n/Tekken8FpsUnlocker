@@ -116,11 +116,11 @@ void processPose(void* component, void* mesh, void* animation, bool evaluate, Po
     const VisualFrame start = visualFrame();
     reinterpret_cast<ProcessPose>(originalPose)(component, mesh, animation, evaluate, spaceBases,
                                                boneSpace, rootTranslation, curves, attributes);
-    if (!start.active || !component || !mesh || !spaceBases || !spaceBases->data ||
+    if (start.tick == 0 || !component || !mesh || !spaceBases || !spaceBases->data ||
         spaceBases->count <= 0 || spaceBases->count > spaceBases->capacity || !isFighterMesh(component))
         return;
     const VisualFrame end = visualFrame();
-    if (!end.active || start.scene != end.scene || start.tick != end.tick)
+    if (start.scene != end.scene || start.tick != end.tick)
         return;
     try {
         interpolatePose(component, mesh, animation, evaluate, *spaceBases, end);

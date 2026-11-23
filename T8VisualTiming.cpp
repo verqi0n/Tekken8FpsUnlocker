@@ -23,10 +23,10 @@ double countsPerStep = 0;
 
 VisualFrame visualFrame() noexcept {
     AcquireSRWLockShared(&timingLock);
-    VisualFrame result{scene, tick, 0, started != 0};
+    VisualFrame result{scene, tick, 0};
     const auto stamp = started;
     ReleaseSRWLockShared(&timingLock);
-    if (result.active) {
+    if (result.tick != 0) {
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         result.alpha = std::clamp(static_cast<double>(now.QuadPart - stamp) / countsPerStep, 0.0, 1.0);
@@ -88,6 +88,10 @@ bool installVisualInterpolation(std::uint8_t* image) noexcept {
         return false;
     }
     return true;
+}
+
+void uninstallVisualInterpolation() noexcept {
+    MH_Uninitialize();
 }
 
 } // namespace tekken8

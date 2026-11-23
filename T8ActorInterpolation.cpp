@@ -89,7 +89,7 @@ void updateCamera(void* manager, float seconds) noexcept {
     reinterpret_cast<CameraUpdate>(originalCamera)(manager, seconds);
     const auto frame = visualFrame();
     static thread_local History history;
-    if (!frame.active || !manager) {
+    if (frame.tick == 0 || !manager) {
         history.owner = nullptr;
         return;
     }
@@ -123,7 +123,7 @@ bool setActorTransform(void* actor, const Triple* position, const Triple* rotati
     auto original = reinterpret_cast<SetActorTransform>(originalActor);
     const auto frame = visualFrame();
     static thread_local History fighters[2];
-    if (!frame.active) {
+    if (frame.tick == 0) {
         fighters[0].owner = fighters[1].owner = nullptr;
         return original(actor, position, rotation, sweep, hitResult, teleport);
     }
