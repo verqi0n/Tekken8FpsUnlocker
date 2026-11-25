@@ -17,13 +17,15 @@ FetchContent_MakeAvailable(minhook)
 # Keep the MinHook and bundled disassembler notices with the standalone ASI.
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MinHookLicense.rc"
     CONTENT "101 RCDATA \"@minhook_SOURCE_DIR@/LICENSE.txt\"\n" @ONLY)
-add_library(Tekken8FpsUnlocker MODULE Tekken8FpsUnlocker.cpp T8MonitorRefresh.cpp T8VisualTiming.cpp
+add_library(Tekken8FpsUnlocker MODULE Tekken8FpsUnlocker.cpp T8Config.cpp T8VisualTiming.cpp
     T8ActorInterpolation.cpp T8PoseInterpolation.cpp T8FighterTargets.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/MinHookLicense.rc")
 target_compile_features(Tekken8FpsUnlocker PRIVATE cxx_std_17)
 target_compile_options(Tekken8FpsUnlocker PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4> $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
-target_link_libraries(Tekken8FpsUnlocker PRIVATE minhook dxgi user32)
+target_link_libraries(Tekken8FpsUnlocker PRIVATE minhook)
 set_target_properties(Tekken8FpsUnlocker PROPERTIES PREFIX "" SUFFIX ".asi")
+file(GENERATE OUTPUT "$<TARGET_FILE_DIR:Tekken8FpsUnlocker>/Tekken8FpsUnlocker.ini"
+    INPUT "${CMAKE_CURRENT_SOURCE_DIR}/Tekken8FpsUnlocker.ini")
 
 include(CTest)
 if(BUILD_TESTING)

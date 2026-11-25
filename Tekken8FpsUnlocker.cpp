@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include "Tekken8FpsUnlocker.hpp"
-#include "T8MonitorRefresh.hpp"
+#include "T8Config.hpp"
 #include "T8VisualTiming.hpp"
 
 static_assert(sizeof(void*) == 8, "Build for x64");
@@ -29,6 +29,7 @@ constexpr unsigned fixedFrameRateValue = 0x9E0;
 using GameTick = void (*)(void*, double);
 std::uint8_t* image = nullptr;
 GameTick originalTick = nullptr;
+float targetFps = 0.0f;
 
 bool supportedImage(const std::uint8_t* base) noexcept {
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
@@ -144,7 +145,7 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
         tekken8::completeVisualTick(start.QuadPart);
     }
     // Tekken reapplies its cap on scene changes. Refresh even on a zero-tick frame.
-    frameRate.apply(frameRateFields(), tekken8::monitorRefreshLimit());
+    frameRate.apply(frameRateFields(), targetFps);
 }
 
 BOOL CALLBACK install(PINIT_ONCE, PVOID, PVOID*) {
@@ -161,6 +162,7 @@ BOOL CALLBACK install(PINIT_ONCE, PVOID, PVOID*) {
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
                             reinterpret_cast<LPCWSTR>(&__ImageBase), &self))
         return TRUE;
+    targetFps = tekken8::readTargetFps(self);
     image = base;
     originalTick = reinterpret_cast<GameTick>(expected);
     DWORD protection;

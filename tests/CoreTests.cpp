@@ -49,19 +49,25 @@ void testFrameRate() {
     tekken8::FrameRateFields fields{&flags, &fixed, &cap};
     tekken8::FrameRateOverride rate;
     rate.apply(fields, 160);
-    check(flags == 7 && fixed == 160 && cap == 160, "monitor cap and fixed-step flag");
+    check(flags == 7 && fixed == 160 && cap == 160, "configured cap and fixed-step flag");
     rate.apply(fields, 144);
     flags |= 0x10;
     cap = 120;
     rate.restore(fields);
     check(flags == 0x57 && fixed == 60 && cap == 120, "restore owned settings and preserve engine changes");
 
+    rate.apply(fields, 0);
+    check(flags == 0x17 && fixed == 0 && cap == 0, "zero target removes the render limit");
+    rate.apply(fields, 0);
+    rate.restore(fields);
+    check(flags == 0x57 && fixed == 60 && cap == 120, "restore native settings after uncapped rendering");
+
     flags = 3;
     rate.apply(fields, 144);
     cap = 45;
     rate.apply(fields, 160);
-    rate.apply(fields, 0);
-    check(flags == 3 && fixed == 60 && cap == 45, "loss of monitor restores latest native cap");
+    rate.apply(fields, -1);
+    check(flags == 3 && fixed == 60 && cap == 45, "invalid target restores latest native cap");
 
     rate.apply(fields, 160);
     std::uint8_t replacementFlags = 1;

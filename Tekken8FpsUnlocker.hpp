@@ -43,7 +43,7 @@ struct FrameRateFields {
 class FrameRateOverride {
 public:
     void apply(FrameRateFields fields, float target) noexcept {
-        if (!fields.flags || !fields.fixed || !fields.maximum || !(target > 0) || !std::isfinite(target)) {
+        if (!fields.flags || !fields.fixed || !fields.maximum || target < 0 || !std::isfinite(target)) {
             restore(fields);
             return;
         }
