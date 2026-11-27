@@ -1,7 +1,6 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
-#include <string_view>
 
 namespace tekken8 {
 
@@ -25,14 +24,6 @@ public:
 private:
     double remaining_ = 0.0;
 };
-
-template<class Char>
-bool isPlayableMap(std::basic_string_view<Char> name, std::basic_string_view<Char> boot) noexcept {
-    const auto slash = name.find_last_of(static_cast<Char>('/'));
-    if (slash != name.npos)
-        name.remove_prefix(slash + 1);
-    return !name.empty() && name != boot;
-}
 
 struct FrameRateFields {
     std::uint8_t* flags;

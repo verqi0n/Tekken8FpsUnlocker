@@ -18,7 +18,7 @@ FetchContent_MakeAvailable(minhook)
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MinHookLicense.rc"
     CONTENT "101 RCDATA \"@minhook_SOURCE_DIR@/LICENSE.txt\"\n" @ONLY)
 add_library(Tekken8FpsUnlocker MODULE Tekken8FpsUnlocker.cpp T8Config.cpp T8VisualTiming.cpp
-    T8ActorInterpolation.cpp T8PoseInterpolation.cpp T8FighterTargets.cpp
+    T8ActorInterpolation.cpp T8PoseInterpolation.cpp T8FighterTargets.cpp T8MatchActivity.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/MinHookLicense.rc")
 target_compile_features(Tekken8FpsUnlocker PRIVATE cxx_std_17)
 target_compile_options(Tekken8FpsUnlocker PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4> $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
@@ -29,7 +29,7 @@ file(GENERATE OUTPUT "$<TARGET_FILE_DIR:Tekken8FpsUnlocker>/Tekken8FpsUnlocker.i
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(Tekken8CoreTests tests/CoreTests.cpp)
+    add_executable(Tekken8CoreTests tests/CoreTests.cpp T8MatchActivity.cpp)
     target_compile_features(Tekken8CoreTests PRIVATE cxx_std_17)
     target_compile_options(Tekken8CoreTests PRIVATE /W4 /EHsc)
     target_include_directories(Tekken8CoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

@@ -1,5 +1,7 @@
 #include "Tekken8FpsUnlocker.hpp"
+#include "T8MatchActivity.hpp"
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 
 namespace {
@@ -77,14 +79,142 @@ void testFrameRate() {
     check(flags == 3 && fixed == 160, "previous engine storage stays untouched after replacement");
 }
 
+void testFighterSide() {
+    alignas(int) std::uint8_t human[0x90 + 0x3BBC]{};
+    alignas(int) std::uint8_t cpu[sizeof human]{};
+    human[0] = cpu[0] = 1;
+    human[0x90 + 0x3AC4] = 1; // P2 occupies the first storage slot.
+    cpu[0x90 + 0x3BB8] = 1;
+    const void* fighters[]{human, cpu};
+    check(tekken8::hasManualFighterOnSide(fighters, 2, 1), "P2 human in reordered roster");
+    check(!tekken8::hasManualFighterOnSide(fighters, 2, 0), "the human is on the other side");
+    check(!tekken8::hasManualFighterOnSide(fighters, 0, 1), "empty roster during scene change");
+    fighters[0] = nullptr;
+    fighters[1] = human;
+    check(!tekken8::hasManualFighterOnSide(fighters, 1, 1), "ignore slots beyond the current roster");
+    human[0] = 0;
+    check(!tekken8::hasManualFighterOnSide(fighters, 2, 1), "ignore an inactive fighter from the previous match");
+}
+
+void testMatchActivity() {
+    tekken8::FightActivity fight;
+    check(!fight.allowsUnlock(), "no current fight");
+    fight.matchMode = 1; // Practice
+    fight.side = 0;
+    fight.sideRole = 1;
+    fight.playerKind = 1;
+    fight.manualFighter = true;
+    check(!fight.allowsUnlock(), "a player record can exist in menus and during loading");
+    fight.battleMain = true;
+    check(fight.allowsUnlock(), "local practice P1");
+    fight.side = 1;
+    check(fight.allowsUnlock(), "local practice P2");
+    fight.manualFighter = false;
+    check(!fight.allowsUnlock(), "local profile present while the fighter is absent or under automatic control");
+    fight.manualFighter = true;
+    fight.menuOpen = true;
+    check(!fight.allowsUnlock(), "opening the practice menu in the same world");
+    fight.menuOpen = false;
+    fight.replay = true;
+    check(!fight.allowsUnlock(), "replay even with the original player's record or during takeover");
+    fight.replay = false;
+
+    fight.matchMode = 4;
+    fight.playerKind = 4;
+    for (int subtype : {0, 1, 2, 3, 4, 6}) {
+        fight.networkMode = subtype;
+        check(fight.allowsUnlock(), "local player in a network battle");
+    }
+    fight.networkMode = 4; // Player Match
+    fight.playerKind = 2;
+    check(!fight.allowsUnlock(), "a non-network player record during a room transition");
+    fight.playerKind = 4;
+    fight.spectating = true;
+    check(!fight.allowsUnlock(), "watching in the room with a persistent local record");
+    fight.spectating = false;
+    for (int role : {-1, 0, 3, 4}) {
+        fight.sideRole = role;
+        check(!fight.allowsUnlock(), "unassigned, placeholder or another player's side");
+    }
+    fight.sideRole = 1;
+    check(fight.allowsUnlock(), "local turn in the same room");
+    fight.spectating = true;
+    check(!fight.allowsUnlock(), "back to watching after a local turn");
+    fight.spectating = false;
+    for (int subtype : {-1, 5, 7, 100}) {
+        fight.networkMode = subtype;
+        check(!fight.allowsUnlock(), "unrecognized or ghost network battle");
+    }
+    for (int mode : {-1, 0, 3, 7, 14, 20, 21, 99}) {
+        fight.matchMode = mode;
+        check(!fight.allowsUnlock(), "missing, unknown or ghost-vs-ghost match");
+    }
+    for (int mode : {6, 12}) {
+        fight.matchMode = mode;
+        fight.playerKind = 2;
+        check(!fight.allowsUnlock(), "CPU versus CPU with a persistent local profile");
+        fight.playerKind = mode;
+        check(fight.allowsUnlock(), "human versus CPU or another local player");
+    }
+    fight.playerKind = 4;
+    fight.networkMode = 6;
+    check(!fight.allowsUnlock(), "special match is still configuring its temporary offline descriptor");
+    fight.matchMode = 4;
+    check(fight.allowsUnlock(), "online special match has entered network play");
+    fight.networkMode = 7;
+    check(!fight.allowsUnlock(), "online ghost match");
+    fight.matchMode = 16;
+    fight.playerKind = 16;
+    check(fight.allowsUnlock(), "a local human fighting a ghost opponent");
+    fight.ghostFighter = true;
+    check(!fight.allowsUnlock(), "own side controlled by a ghost");
+    fight.matchMode = 1;
+    fight.side = 0xff;
+    check(!fight.allowsUnlock(), "invalid local side");
+}
+
+void testFightFrameRateTransitions() {
+    std::uint8_t flags = 0x40;
+    float fixed = 60, cap = 60;
+    tekken8::FrameRateFields fields{&flags, &fixed, &cap};
+    tekken8::FrameRateOverride rate;
+    tekken8::FightActivity fight;
+    fight.matchMode = 1;
+    fight.side = 0;
+    fight.sideRole = 1;
+    fight.playerKind = 1;
+    fight.manualFighter = true;
+    const auto update = [&] {
+        if (fight.allowsUnlock())
+            rate.apply(fields, 0);
+        else
+            rate.restore(fields);
+    };
+
+    update();
+    check(flags == 0x40 && fixed == 60 && cap == 60, "menu keeps the native frame rate");
+    fight.battleMain = true;
+    update();
+    check(flags == 0 && fixed == 0 && cap == 0, "entering combat uncaps rendering");
+    fight.menuOpen = true;
+    update();
+    check(flags == 0x40 && fixed == 60 && cap == 60, "pausing restores the native frame rate");
+    cap = 90; // The game changes its own cap while paused.
+    fight.menuOpen = false;
+    update();
+    check(flags == 0 && fixed == 0 && cap == 0, "resuming combat reapplies the configured rate");
+    fight.battleMain = false;
+    update();
+    check(flags == 0x40 && fixed == 60 && cap == 90, "leaving combat restores the latest native cap");
+}
+
 } // namespace
 
 int main() {
     testClock();
     testFrameRate();
-    check(!tekken8::isPlayableMap<char>("Boot", "Boot"), "short boot map name");
-    check(!tekken8::isPlayableMap<wchar_t>(L"/Game/Maps/Boot", L"Boot"), "qualified wide boot map name");
-    check(!tekken8::isPlayableMap<char>("", "Boot"), "missing map name");
-    check(tekken8::isPlayableMap<char>("/Game/Boot/Battle", "Boot"), "playable map under a boot directory");
+    testFighterSide();
+    testMatchActivity();
+    testFightFrameRateTransitions();
     return failures ? 1 : 0;
 }

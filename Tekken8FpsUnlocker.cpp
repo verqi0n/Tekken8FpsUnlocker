@@ -6,6 +6,7 @@
 #include <cstring>
 #include "Tekken8FpsUnlocker.hpp"
 #include "T8Config.hpp"
+#include "T8MatchActivity.hpp"
 #include "T8VisualTiming.hpp"
 
 static_assert(sizeof(void*) == 8, "Build for x64");
@@ -22,7 +23,6 @@ constexpr DWORD tickImplementation = 0x05BB57B0;
 constexpr DWORD gameplayInstance = 0x09948C68;
 constexpr DWORD engineInstance = 0x09BB6670;
 constexpr DWORD maxFpsStorage = 0x09BB6B60;
-constexpr DWORD namePool = 0x099BC380;
 constexpr unsigned fixedFrameRateFlags = 0x9DC;
 constexpr unsigned fixedFrameRateValue = 0x9E0;
 
@@ -68,33 +68,6 @@ const std::uint8_t* viewportWorld() noexcept {
     return viewport ? *reinterpret_cast<const std::uint8_t* const*>(viewport + 0x78) : nullptr;
 }
 
-// The menu world can already be loaded during Boot. The overlay waits for the viewport to switch maps (RVA 0x3A606).
-bool viewportHasLeftBoot(const std::uint8_t* world) noexcept {
-    if (!world)
-        return false;
-    const auto* level = *reinterpret_cast<const std::uint8_t* const*>(world + 0x30);
-    if (!level)
-        return false;
-    const auto* owner = *reinterpret_cast<const std::uint8_t* const*>(level + 0x20);
-    if (!owner)
-        return false;
-
-    // FNameEntryId is a block index and a two-byte offset within that block.
-    const auto id = *reinterpret_cast<const std::uint32_t*>(owner + 0x18);
-    const auto* pool = image + namePool;
-    if (!id || (id >> 16) > *reinterpret_cast<const std::uint32_t*>(pool + 8))
-        return false;
-    const auto* block = reinterpret_cast<const std::uint8_t* const*>(pool + 0x10)[id >> 16];
-    if (!block)
-        return false;
-    const auto* entry = block + 2 * (id & 0xFFFF);
-    const auto header = *reinterpret_cast<const std::uint16_t*>(entry);
-    const auto length = static_cast<std::size_t>(header >> 6);
-    if (header & 1)
-        return tekken8::isPlayableMap<wchar_t>({reinterpret_cast<const wchar_t*>(entry + 2), length}, L"Boot");
-    return tekken8::isPlayableMap<char>({reinterpret_cast<const char*>(entry + 2), length}, "Boot");
-}
-
 void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
     auto* const instance = reinterpret_cast<void* volatile*>(image + gameplayInstance);
     if (_ReturnAddress() != image + dispatchReturn || gameplay != *instance) {
@@ -115,7 +88,7 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
     };
 
     const auto* world = viewportWorld();
-    if (!viewportHasLeftBoot(world)) {
+    if (!tekken8::isLocalFight(image, world)) {
         if (activeWorld)
             leaveWorld();
         originalTick(gameplay, seconds);
@@ -137,7 +110,7 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
         LARGE_INTEGER start{};
         QueryPerformanceCounter(&start);
         originalTick(gameplay, tekken8::gameplayStep);
-        if (gameplay != *instance || world != viewportWorld()) {
+        if (gameplay != *instance || world != viewportWorld() || !tekken8::isLocalFight(image, world)) {
             leaveWorld();
             return;
         }
