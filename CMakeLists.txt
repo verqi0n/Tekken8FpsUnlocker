@@ -4,6 +4,8 @@ if(NOT MSVC OR NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
     message(FATAL_ERROR "Build the ASI with an x64 Visual Studio toolchain.")
 endif()
 
+# Inline as aggressively as MSVC allows in Release (CMake defaults to /Ob2).
+string(REPLACE "/Ob2" "/Ob3" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 # MinHook's CMake project predates CMP0077. Make its option honor this setting.
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
@@ -22,6 +24,16 @@ add_library(Tekken8FpsUnlocker MODULE Tekken8FpsUnlocker.cpp T8Config.cpp T8Visu
     "${CMAKE_CURRENT_BINARY_DIR}/MinHookLicense.rc")
 target_compile_features(Tekken8FpsUnlocker PRIVATE cxx_std_17)
 target_compile_options(Tekken8FpsUnlocker PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4> $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+
+# Release favors speed over size. Every CPU that meets Tekken 8's minimum
+# requirements supports AVX2. /fp:fast stays off: it may drop the isfinite
+# checks that guard interpolation against invalid game transforms.
+function(optimize_for_speed target)
+    target_compile_options(${target} PRIVATE $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:
+        /O2 /Oi /Ot /GL /Gw /Gy /GS- /arch:AVX2 /fp:precise /Zc:inline>)
+    target_link_options(${target} PRIVATE $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>)
+endfunction()
+optimize_for_speed(Tekken8FpsUnlocker)
 target_link_libraries(Tekken8FpsUnlocker PRIVATE minhook)
 set_target_properties(Tekken8FpsUnlocker PROPERTIES PREFIX "" SUFFIX ".asi")
 file(GENERATE OUTPUT "$<TARGET_FILE_DIR:Tekken8FpsUnlocker>/Tekken8FpsUnlocker.ini"
@@ -32,6 +44,7 @@ if(BUILD_TESTING)
     add_executable(Tekken8CoreTests tests/CoreTests.cpp T8MatchActivity.cpp)
     target_compile_features(Tekken8CoreTests PRIVATE cxx_std_17)
     target_compile_options(Tekken8CoreTests PRIVATE /W4 /EHsc)
+    optimize_for_speed(Tekken8CoreTests)
     target_include_directories(Tekken8CoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME Tekken8CoreTests COMMAND Tekken8CoreTests)
 endif()
