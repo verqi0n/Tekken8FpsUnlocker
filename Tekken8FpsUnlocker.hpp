@@ -1,8 +1,18 @@
 #pragma once
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 
 namespace tekken8 {
+
+// True for a loaded map other than the startup map. Accepts short or package-qualified names.
+template<class Char>
+bool isPlayableMap(std::basic_string_view<Char> name, std::basic_string_view<Char> boot) noexcept {
+    const auto slash = name.find_last_of(static_cast<Char>('/'));
+    if (slash != name.npos)
+        name.remove_prefix(slash + 1);
+    return !name.empty() && name != boot;
+}
 
 // The overlay computes the step in single precision, then accumulates in double.
 inline constexpr double gameplayStep = static_cast<double>(1.0f / 60.0f);

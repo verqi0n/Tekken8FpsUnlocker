@@ -23,13 +23,14 @@ constexpr DWORD tickImplementation = 0x05BB57B0;
 constexpr DWORD gameplayInstance = 0x09948C68;
 constexpr DWORD engineInstance = 0x09BB6670;
 constexpr DWORD maxFpsStorage = 0x09BB6B60;
+constexpr DWORD namePool = 0x099BC380;
 constexpr unsigned fixedFrameRateFlags = 0x9DC;
 constexpr unsigned fixedFrameRateValue = 0x9E0;
 
 using GameTick = void (*)(void*, double);
 std::uint8_t* image = nullptr;
 GameTick originalTick = nullptr;
-float targetFps = 0.0f;
+tekken8::Settings settings;
 
 bool supportedImage(const std::uint8_t* base) noexcept {
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
@@ -68,6 +69,38 @@ const std::uint8_t* viewportWorld() noexcept {
     return viewport ? *reinterpret_cast<const std::uint8_t* const*>(viewport + 0x78) : nullptr;
 }
 
+// The menu world can already be loaded during Boot. The overlay waits for the viewport to switch maps (RVA 0x3A606).
+bool viewportHasLeftBoot(const std::uint8_t* world) noexcept {
+    if (!world)
+        return false;
+    const auto* level = *reinterpret_cast<const std::uint8_t* const*>(world + 0x30);
+    if (!level)
+        return false;
+    const auto* owner = *reinterpret_cast<const std::uint8_t* const*>(level + 0x20);
+    if (!owner)
+        return false;
+
+    // FNameEntryId is a block index and a two-byte offset within that block.
+    const auto id = *reinterpret_cast<const std::uint32_t*>(owner + 0x18);
+    const auto* pool = image + namePool;
+    if (!id || (id >> 16) > *reinterpret_cast<const std::uint32_t*>(pool + 8))
+        return false;
+    const auto* block = reinterpret_cast<const std::uint8_t* const*>(pool + 0x10)[id >> 16];
+    if (!block)
+        return false;
+    const auto* entry = block + 2 * (id & 0xFFFF);
+    const auto header = *reinterpret_cast<const std::uint16_t*>(entry);
+    const auto length = static_cast<std::size_t>(header >> 6);
+    if (header & 1)
+        return tekken8::isPlayableMap<wchar_t>({reinterpret_cast<const wchar_t*>(entry + 2), length}, L"Boot");
+    return tekken8::isPlayableMap<char>({reinterpret_cast<const char*>(entry + 2), length}, "Boot");
+}
+
+// Whether to pace, interpolate and apply TargetFPS in this world on this frame.
+bool unlocksWorld(const std::uint8_t* world) noexcept {
+    return settings.unlockEverywhere ? viewportHasLeftBoot(world) : tekken8::isLocalFight(image, world);
+}
+
 void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
     auto* const instance = reinterpret_cast<void* volatile*>(image + gameplayInstance);
     if (_ReturnAddress() != image + dispatchReturn || gameplay != *instance) {
@@ -88,7 +121,7 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
     };
 
     const auto* world = viewportWorld();
-    if (!tekken8::isLocalFight(image, world)) {
+    if (!unlocksWorld(world)) {
         if (activeWorld)
             leaveWorld();
         originalTick(gameplay, seconds);
@@ -110,7 +143,7 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
         tekken8::beginVisualTicks();
     while (clock.takeStep()) {
         originalTick(gameplay, tekken8::gameplayStep);
-        if (gameplay != *instance || world != viewportWorld() || !tekken8::isLocalFight(image, world)) {
+        if (gameplay != *instance || world != viewportWorld() || !unlocksWorld(world)) {
             leaveWorld();
             return;
         }
@@ -121,7 +154,7 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
     // unspent time, which varies every frame and shows up as judder.
     tekken8::setVisualPhase(clock.phase());
     // Tekken reapplies its cap on scene changes. Refresh even on a zero-tick frame.
-    frameRate.apply(frameRateFields(), targetFps);
+    frameRate.apply(frameRateFields(), settings.targetFps);
 }
 
 BOOL CALLBACK install(PINIT_ONCE, PVOID, PVOID*) {
@@ -138,7 +171,7 @@ BOOL CALLBACK install(PINIT_ONCE, PVOID, PVOID*) {
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
                             reinterpret_cast<LPCWSTR>(&__ImageBase), &self))
         return TRUE;
-    targetFps = tekken8::readTargetFps(self);
+    settings = tekken8::readSettings(self);
     image = base;
     originalTick = reinterpret_cast<GameTick>(expected);
     DWORD protection;

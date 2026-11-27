@@ -248,6 +248,15 @@ void testFightFrameRateTransitions() {
     check(flags == 0x40 && fixed == 60 && cap == 90, "leaving combat restores the latest native cap");
 }
 
+void testPlayableMap() {
+    check(!tekken8::isPlayableMap<char>("Boot", "Boot"), "short boot map name");
+    check(!tekken8::isPlayableMap<wchar_t>(L"/Game/Maps/Boot", L"Boot"), "qualified wide boot map name");
+    check(!tekken8::isPlayableMap<char>("", "Boot"), "missing map name");
+    check(!tekken8::isPlayableMap<char>("/Game/Maps/", "Boot"), "qualified name without a map");
+    check(tekken8::isPlayableMap<char>("/Game/Boot/Battle", "Boot"), "playable map under a boot directory");
+    check(tekken8::isPlayableMap<wchar_t>(L"MainMenu", L"Boot"), "menu map after startup");
+}
+
 } // namespace
 
 int main() {
@@ -258,5 +267,6 @@ int main() {
     testFightPhases();
     testMatchActivity();
     testFightFrameRateTransitions();
+    testPlayableMap();
     return failures ? 1 : 0;
 }

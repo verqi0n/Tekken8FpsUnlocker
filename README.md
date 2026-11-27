@@ -29,11 +29,14 @@ Edit the `[FPS]` section of `Tekken8FpsUnlocker.ini` next to the ASI.
 ```ini
 [FPS]
 TargetFPS=300
+UnlockEverywhere=0
 ```
 
 Set `TargetFPS` to a positive whole number for the maximum render FPS, or to `0` for uncapped rendering. If the file or setting is missing or the value is invalid, the plugin uses 300 FPS.
 
 The plugin applies `TargetFPS` while you control a fighter in a match or in practice, including character intros, round calls and round ends. The main menu, character selection, loading screens, the winner pose, results screens, pause menus, replays and spectated matches use the game's own frame limit. Resuming play reapplies `TargetFPS` automatically.
+
+Set `UnlockEverywhere=1` to apply `TargetFPS` in every scene after the game's startup screen, including menus, character selection, loading screens, the winner pose, results screens, pause menus, replays and spectated matches. Gameplay still runs at 60 ticks per second, and the plugin interpolates the battle camera and fighters wherever they appear. If the setting is missing or has any value other than `1`, the plugin uses the default behavior described above.
 
 Restart the game after editing the INI. Actual frame rates depend on rendering performance, VSync and external frame limiters.
 
