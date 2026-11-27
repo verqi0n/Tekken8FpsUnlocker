@@ -14,11 +14,19 @@ public:
             remaining_ += seconds < 10.0 ? seconds : 10.0;
     }
 
+    bool ready() const noexcept { return remaining_ >= gameplayStep; }
+
     bool takeStep() noexcept {
         if (remaining_ < gameplayStep)
             return false;
         remaining_ -= gameplayStep;
         return true;
+    }
+
+    // Unspent time as a fraction of a tick: the render position between the last two ticks.
+    double phase() const noexcept {
+        const double value = remaining_ / gameplayStep;
+        return value < 1.0 ? value : 1.0;
     }
 
 private:

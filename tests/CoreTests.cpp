@@ -45,6 +45,30 @@ void testClock() {
     check(drain(clock) == static_cast<int>(10.0 / tekken8::gameplayStep), "bounded catch-up");
 }
 
+void testClockPhase() {
+    // At 144 FPS a tick spans 2.4 frames. The rendered position must advance by
+    // exactly one frame's worth every frame, including frames that run a tick.
+    for (int rate : {75, 144, 165, 240, 300, 500}) {
+        tekken8::GameplayClock clock;
+        const double expected = 1.0 / rate / tekken8::gameplayStep;
+        double previous = 0.0;
+        int ticks = 0;
+        bool steady = true;
+        for (int frame = 0; frame < rate * 5; ++frame) {
+            clock.addFrame(1.0 / rate);
+            check(clock.ready() == (clock.phase() >= 1.0), "ready matches a full tick of unspent time");
+            const int stepped = drain(clock);
+            ticks += stepped;
+            const double position = ticks + clock.phase();
+            if (frame > 0 && std::fabs(position - previous - expected) > 1e-9)
+                steady = false;
+            previous = position;
+            check(clock.phase() >= 0.0 && clock.phase() < 1.0, "phase stays within a tick after stepping");
+        }
+        check(steady, "render position advances evenly across tick boundaries");
+    }
+}
+
 void testFrameRate() {
     std::uint8_t flags = 0x47;
     float fixed = 60, cap = 90;
@@ -228,6 +252,7 @@ void testFightFrameRateTransitions() {
 
 int main() {
     testClock();
+    testClockPhase();
     testFrameRate();
     testFighterSide();
     testFightPhases();

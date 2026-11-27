@@ -2,57 +2,78 @@
 #define NOMINMAX
 #include <windows.h>
 #include <MinHook.h>
-#include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <immintrin.h>
 #include "T8VisualTiming.hpp"
 #include "T8ActorInterpolation.hpp"
 #include "T8FighterTargets.hpp"
 #include "T8PoseInterpolation.hpp"
-#include "Tekken8FpsUnlocker.hpp"
 
 namespace tekken8 {
 namespace {
 
-SRWLOCK timingLock = SRWLOCK_INIT;
+// Single writer (the game thread), many readers (render and animation threads).
+// The sequence is odd while the game thread publishes a new frame.
+alignas(64) std::atomic<std::uint64_t> sequence{0};
+std::atomic<std::uint64_t> scene{0}, tick{0};
+std::atomic<double> alpha{1.0};
 const void* currentWorld = nullptr; // Used only on the game thread.
-std::uint64_t scene = 0, tick = 0;
-std::int64_t started = 0;
-double countsPerStep = 0;
+
+template<class Update>
+void publish(Update update) noexcept {
+    const auto next = sequence.load(std::memory_order_relaxed) + 1;
+    sequence.store(next, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    update();
+    sequence.store(next + 1, std::memory_order_release);
+}
 
 }
 
 VisualFrame visualFrame() noexcept {
-    LARGE_INTEGER now{};
-    AcquireSRWLockShared(&timingLock);
-    VisualFrame result{scene, tick, 0};
-    const auto stamp = started;
-    if (result.tick != 0)
-        QueryPerformanceCounter(&now);
-    ReleaseSRWLockShared(&timingLock);
-    if (result.tick != 0)
-        result.alpha = std::clamp(static_cast<double>(now.QuadPart - stamp) / countsPerStep, 0.0, 1.0);
-    return result;
+    for (;;) {
+        const auto before = sequence.load(std::memory_order_acquire);
+        if (before & 1) {
+            _mm_pause();
+            continue;
+        }
+        const VisualFrame result{scene.load(std::memory_order_relaxed), tick.load(std::memory_order_relaxed),
+                                 alpha.load(std::memory_order_relaxed)};
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (sequence.load(std::memory_order_relaxed) == before)
+            return result;
+    }
 }
 
 void updateVisualWorld(const std::uint8_t* image, const void* world) noexcept {
     if (world != currentWorld) {
-        AcquireSRWLockExclusive(&timingLock);
-        ++scene;
-        tick = 0;
-        started = 0;
-        ReleaseSRWLockExclusive(&timingLock);
+        publish([] {
+            scene.store(scene.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+            tick.store(0, std::memory_order_relaxed);
+            alpha.store(1.0, std::memory_order_relaxed);
+        });
         currentWorld = world;
     }
     refreshFighterTargets(image, world);
 }
 
-void completeVisualTick(std::int64_t startCounter) noexcept {
+void beginVisualTicks() noexcept {
+    // Transforms written during a tick belong to its end state.
+    if (currentWorld)
+        publish([] { alpha.store(1.0, std::memory_order_relaxed); });
+}
+
+void completeVisualTick() noexcept {
+    if (currentWorld)
+        publish([] { tick.store(tick.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); });
+}
+
+void setVisualPhase(double phase) noexcept {
     if (!currentWorld)
         return;
-    AcquireSRWLockExclusive(&timingLock);
-    ++tick;
-    started = startCounter;
-    ReleaseSRWLockExclusive(&timingLock);
+    phase = phase > 0.0 ? (phase < 1.0 ? phase : 1.0) : 0.0; // Also maps NaN to 0.
+    publish([phase] { alpha.store(phase, std::memory_order_relaxed); });
 }
 
 bool installVisualInterpolation(std::uint8_t* image) noexcept {
@@ -67,10 +88,6 @@ bool installVisualInterpolation(std::uint8_t* image) noexcept {
         std::memcmp(pose, posePrologue, sizeof posePrologue))
         return false;
 
-    LARGE_INTEGER frequency;
-    if (!QueryPerformanceFrequency(&frequency))
-        return false;
-    countsPerStep = static_cast<double>(frequency.QuadPart) * gameplayStep;
     struct Hook { void* entry; void* replacement; void** original; };
     const Hook hooks[]{{camera, cameraHook(), &originalCamera}, {actor, actorHook(), &originalActor},
                        {pose, poseHook(), &originalPose}};

@@ -106,17 +106,20 @@ void __declspec(noinline) pacedTick(void* gameplay, double seconds) noexcept {
     }
     tekken8::updateVisualWorld(image, world);
     clock.addFrame(seconds);
+    if (clock.ready())
+        tekken8::beginVisualTicks();
     while (clock.takeStep()) {
-        LARGE_INTEGER start{};
-        QueryPerformanceCounter(&start);
         originalTick(gameplay, tekken8::gameplayStep);
         if (gameplay != *instance || world != viewportWorld() || !tekken8::isLocalFight(image, world)) {
             leaveWorld();
             return;
         }
-        // Publish the completed tick using its start time, as the overlay does.
-        tekken8::completeVisualTick(start.QuadPart);
+        tekken8::completeVisualTick();
     }
+    // Render this whole frame at the gameplay clock's position between the last
+    // two ticks. Measuring from each tick's wall-clock start instead lags by the
+    // unspent time, which varies every frame and shows up as judder.
+    tekken8::setVisualPhase(clock.phase());
     // Tekken reapplies its cap on scene changes. Refresh even on a zero-tick frame.
     frameRate.apply(frameRateFields(), targetFps);
 }
