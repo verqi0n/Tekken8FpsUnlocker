@@ -6,11 +6,21 @@ The plugin supports **Tekken 8 Steam build 26651490**. It checks the game execut
 
 ## Install
 
-1. Download `Tekken8FpsUnlocker-win64.zip` from a tagged release and extract both files. To try a development build, sign in to GitHub, open a successful workflow run and download `Tekken8FpsUnlocker-win64` under **Artifacts**. [Releases](https://github.com/verqi0n/Tekken8FpsUnlocker/releases) · [Builds](https://github.com/verqi0n/Tekken8FpsUnlocker/actions/workflows/build.yml)
+1. Sign in to GitHub, open the latest successful build on `main` and download `Tekken8FpsUnlocker-win64` under **Artifacts**. Extract both files. [Builds](https://github.com/verqi0n/Tekken8FpsUnlocker/actions/workflows/build.yml?query=branch%3Amain+is%3Asuccess)
 2. Close Tekken 8. In Steam, open the game's installation folder through **Manage → Browse local files**. If you need an ASI loader, place the x64 Ultimate ASI Loader's `dinput8.dll` in `Polaris\Binaries\Win64`, alongside `Polaris-Win64-Shipping.exe`. [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader#installation)
 3. Copy `Tekken8FpsUnlocker.asi` and `Tekken8FpsUnlocker.ini` into `Polaris\Binaries\Win64\plugins`. Create the `plugins` folder if needed, then start the game.
 
 To uninstall, close the game and remove both files from the `plugins` folder.
+
+## Verify the download
+
+Every build from `main` carries a signed GitHub artifact attestation. It proves that this repository's workflow built the exact file from a specific commit. With the [GitHub CLI](https://cli.github.com) installed, run the following in the folder where you extracted the files.
+
+```powershell
+gh attestation verify Tekken8FpsUnlocker.asi --repo verqi0n/Tekken8FpsUnlocker
+```
+
+The check succeeds only for an unmodified ASI built by this repository. The output names the commit and workflow run that produced it. You can also check the INI the same way, but only before you edit it. The repository's [Attestations](https://github.com/verqi0n/Tekken8FpsUnlocker/attestations) page lists every signed build.
 
 ## Configure the FPS limit
 
@@ -38,4 +48,4 @@ From the repository root, run the following in PowerShell or Command Prompt.
 ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
-The script writes the Release build to `Tekken8FpsUnlocker.asi` in the repository root, alongside the INI. GitHub Actions runs the core tests before packaging both files.
+The script writes the Release build to `Tekken8FpsUnlocker.asi` in the repository root, alongside the INI. GitHub Actions builds with Visual Studio 2026, runs the core tests, then attests and packages both files.
