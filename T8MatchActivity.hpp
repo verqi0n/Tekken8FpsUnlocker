@@ -11,7 +11,7 @@ struct FightActivity {
     int side = -1;
     int sideRole = -1;
     int playerKind = -1;
-    bool battleMain = false;
+    int battlePhase = -1;
     bool manualFighter = false;
     bool ghostFighter = false;
     bool replay = false;
@@ -20,6 +20,9 @@ struct FightActivity {
 
     bool allowsUnlock() const noexcept;
 };
+
+// Battle phases from the intro to the last round end, excluding loading, the winner pose and results.
+bool isFightPhase(int phase) noexcept;
 
 bool hasManualFighterOnSide(const void* const* entries, std::size_t count, unsigned side) noexcept;
 

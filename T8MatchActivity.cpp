@@ -9,6 +9,7 @@ constexpr unsigned battleGameModeClass = 0x09935400;
 constexpr unsigned battleManager = 0x09BDC458;
 constexpr unsigned battleRegistry = 0x0959A320;
 constexpr unsigned fighterRegistryKey = 0x0959A088;
+constexpr unsigned battleStateKey = 0x0959A090;
 constexpr unsigned playerRecords = 0x09BDDB18;
 constexpr unsigned watchingBattleScene = 0x09BE0A90;
 constexpr unsigned lobbySession = 0x09BDD470;
@@ -48,6 +49,20 @@ bool battleMenuOpen(const std::uint8_t* image, const void* world, const void* ma
 
 }
 
+bool isFightPhase(int phase) noexcept {
+    switch (phase) {
+    case 1:  // Character intros
+    case 3:  // Round call
+    case 4:  // Fight (IsBattleMain)
+    case 5:  // KO and round end
+    case 21: // Practice (IsBattleMain)
+    case 32: // IsBattleMain
+        return true;
+    default: // 0 starts the battle, 8 shows the winner pose, 35 and 37 show the results.
+        return false;
+    }
+}
+
 bool hasManualFighterOnSide(const void* const* entries, std::size_t count, unsigned side) noexcept {
     if (!entries || side > 1)
         return false;
@@ -63,7 +78,7 @@ bool hasManualFighterOnSide(const void* const* entries, std::size_t count, unsig
 }
 
 bool FightActivity::allowsUnlock() const noexcept {
-    if (!battleMain || !manualFighter || menuOpen || replay || spectating || side < 0 || side > 1 || sideRole != 1)
+    if (!isFightPhase(battlePhase) || !manualFighter || menuOpen || replay || spectating || side < 0 || side > 1 || sideRole != 1)
         return false;
     switch (matchMode) {
     case 4: // Network practice, quick, ranked, lounge, player room, special match
@@ -98,10 +113,13 @@ bool isLocalFight(const std::uint8_t* image, const void* world) noexcept {
         return false;
     const auto* manager = field<const void*>(image, battleManager);
     const auto* registry = field<const void*>(image, battleRegistry);
-    // IsBattleMain checks the registered battle state, but assumes its registry exists.
-    using Query = bool (*)();
-    if (!manager || !registry || !field<const void*>(registry, 0x10) ||
-        !gameFunction<Query>(image, 0x02EB1D50)())
+    // IsBattleMain (0x2EB1D50) reads this phase but only accepts the fight itself.
+    // Its lookup assumes the registry exists.
+    if (!manager || !registry || !field<const void*>(registry, 0x10))
+        return false;
+    using Lookup = const void* (*)(const void*, const void*);
+    const auto* battleState = gameFunction<Lookup>(image, 0x018E6910)(registry, image + battleStateKey);
+    if (!battleState || !isFightPhase(field<int>(battleState, 0x28)))
         return false;
 
     using Descriptor = const void* (*)(const void*);
@@ -111,7 +129,7 @@ bool isLocalFight(const std::uint8_t* image, const void* world) noexcept {
         return false;
 
     FightActivity state;
-    state.battleMain = true;
+    state.battlePhase = field<int>(battleState, 0x28);
     state.matchMode = field<int>(match, 0);
     if (state.matchMode == 4) {
         using NetworkSettings = const int* (*)();

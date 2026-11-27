@@ -23,7 +23,7 @@ TargetFPS=300
 
 Set `TargetFPS` to a positive whole number for the maximum render FPS, or to `0` for uncapped rendering. If the file or setting is missing or the value is invalid, the plugin uses 300 FPS.
 
-The plugin applies `TargetFPS` while you control a fighter in a match or in practice. The main menu, character selection, loading screens, pause menus, replays and spectated matches use the game's own frame limit. Resuming play reapplies `TargetFPS` automatically.
+The plugin applies `TargetFPS` while you control a fighter in a match or in practice, including character intros, round calls and round ends. The main menu, character selection, loading screens, the winner pose, results screens, pause menus, replays and spectated matches use the game's own frame limit. Resuming play reapplies `TargetFPS` automatically.
 
 Restart the game after editing the INI. Actual frame rates depend on rendering performance, VSync and external frame limiters.
 

@@ -96,6 +96,13 @@ void testFighterSide() {
     check(!tekken8::hasManualFighterOnSide(fighters, 2, 1), "ignore an inactive fighter from the previous match");
 }
 
+void testFightPhases() {
+    for (int phase : {1, 3, 4, 5, 21, 32})
+        check(tekken8::isFightPhase(phase), "intro, round call, fight or round end");
+    for (int phase : {-1, 0, 2, 8, 35, 37, 38})
+        check(!tekken8::isFightPhase(phase), "loading, winner pose, results, menus or an unknown phase");
+}
+
 void testMatchActivity() {
     tekken8::FightActivity fight;
     check(!fight.allowsUnlock(), "no current fight");
@@ -105,7 +112,7 @@ void testMatchActivity() {
     fight.playerKind = 1;
     fight.manualFighter = true;
     check(!fight.allowsUnlock(), "a player record can exist in menus and during loading");
-    fight.battleMain = true;
+    fight.battlePhase = 21;
     check(fight.allowsUnlock(), "local practice P1");
     fight.side = 1;
     check(fight.allowsUnlock(), "local practice P2");
@@ -193,9 +200,18 @@ void testFightFrameRateTransitions() {
 
     update();
     check(flags == 0x40 && fixed == 60 && cap == 60, "menu keeps the native frame rate");
-    fight.battleMain = true;
+    fight.battlePhase = 0;
     update();
-    check(flags == 0 && fixed == 0 && cap == 0, "entering combat uncaps rendering");
+    check(flags == 0x40 && fixed == 60 && cap == 60, "the battle is still starting");
+    for (int phase : {1, 3, 4, 5, 3, 4, 5}) {
+        fight.battlePhase = phase;
+        update();
+        check(flags == 0 && fixed == 0 && cap == 0, "intros, round calls, rounds and round ends stay uncapped");
+    }
+    fight.battlePhase = 8;
+    update();
+    check(flags == 0x40 && fixed == 60 && cap == 60, "the winner pose restores the native frame rate");
+    fight.battlePhase = 3;
     fight.menuOpen = true;
     update();
     check(flags == 0x40 && fixed == 60 && cap == 60, "pausing restores the native frame rate");
@@ -203,7 +219,7 @@ void testFightFrameRateTransitions() {
     fight.menuOpen = false;
     update();
     check(flags == 0 && fixed == 0 && cap == 0, "resuming combat reapplies the configured rate");
-    fight.battleMain = false;
+    fight.battlePhase = 38;
     update();
     check(flags == 0x40 && fixed == 60 && cap == 90, "leaving combat restores the latest native cap");
 }
@@ -214,6 +230,7 @@ int main() {
     testClock();
     testFrameRate();
     testFighterSide();
+    testFightPhases();
     testMatchActivity();
     testFightFrameRateTransitions();
     return failures ? 1 : 0;
