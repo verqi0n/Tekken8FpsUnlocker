@@ -99,27 +99,28 @@ const void* mainMesh(const void* actor) noexcept {
 } // namespace
 
 FighterTarget fighterTarget(const void* actor) noexcept {
-    if (isTargetThread && actor && objectImage) {
-        for (unsigned i = 0; i < 2; ++i) {
-            const auto& fighter = fighters[i];
-            if (actor == fighter.actor && !actorUnavailable(actor) && fighter.objectId == objectId(objectImage, actor))
-                return {i, fighter.objectId};
-        }
+    // Only the game thread owns fighters[]; check that before reading it.
+    if (!isTargetThread || !actor || !objectImage)
+        return {};
+    for (unsigned i = 0; i < 2; ++i) {
+        const auto& fighter = fighters[i];
+        if (actor == fighter.actor && !actorUnavailable(actor) && fighter.objectId == objectId(objectImage, actor))
+            return {i, fighter.objectId};
     }
     return {};
 }
 
-std::uint64_t fighterMeshIdentity(const void* component) noexcept {
+FighterTarget fighterMesh(const void* component) noexcept {
     if (component) {
         for (unsigned i = 0; i < 2; ++i) {
-            if (activeMeshes[i].load() == component) {
-                const auto id = meshIds[i].load();
-                if (activeMeshes[i].load() == component)
-                    return id;
+            if (activeMeshes[i].load(std::memory_order_acquire) == component) {
+                const auto id = meshIds[i].load(std::memory_order_acquire);
+                if (activeMeshes[i].load(std::memory_order_acquire) == component)
+                    return {i, id};
             }
         }
     }
-    return 0;
+    return {};
 }
 
 void refreshFighterTargets(const std::uint8_t* image, const void* world) noexcept {

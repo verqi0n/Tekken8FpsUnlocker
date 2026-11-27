@@ -2,10 +2,8 @@
 #define NOMINMAX
 #include <windows.h>
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <cstring>
-#include <mutex>
 #include <new>
 #include <vector>
 #include "T8FighterTargets.hpp"
@@ -37,6 +35,7 @@ using BlendTransform = Transform* (*)(Transform*, const Transform*, const Transf
 BlendTransform blendTransform = nullptr;
 
 struct PoseHistory {
+    SRWLOCK lock = SRWLOCK_INIT;
     const void* component = nullptr;
     std::uint64_t identity = 0;
     const void* mesh = nullptr;
@@ -44,36 +43,39 @@ struct PoseHistory {
     int lod = 0;
     std::uint64_t scene = 0;
     std::uint64_t tick = 0;
-    std::uint64_t used = 0;
     bool hasPair = false;
     std::vector<Transform> previous;
     std::vector<Transform> current;
 };
 
-std::array<PoseHistory, 2> histories;
-std::mutex historyMutex;
-std::uint64_t lastUsed = 0;
+// One history per fighter slot, each on its own cache line, so the two
+// fighters' animation workers never wait for each other.
+#pragma warning(suppress: 4324) // The padding is the point.
+struct alignas(64) PaddedHistory { PoseHistory history; };
+PaddedHistory histories[2];
 
-PoseHistory& historyFor(const void* component, std::uint64_t scene) noexcept {
-    for (auto& h : histories) {
-        if (h.component == component && h.scene == scene)
-            return h;
-    }
-    return histories[histories[0].used <= histories[1].used ? 0 : 1];
-}
+struct ExclusiveLock {
+    explicit ExclusiveLock(SRWLOCK& lock) noexcept : lock_(lock) { AcquireSRWLockExclusive(&lock_); }
+    ~ExclusiveLock() { ReleaseSRWLockExclusive(&lock_); }
+    ExclusiveLock(const ExclusiveLock&) = delete;
+    ExclusiveLock& operator=(const ExclusiveLock&) = delete;
+    SRWLOCK& lock_;
+};
 
-void interpolatePose(const void* component, const void* mesh, const void* animation,
-                     bool evaluated, PoseArray& pose, const VisualFrame& evaluationStart, std::uint64_t identity) {
-    std::lock_guard<std::mutex> lock(historyMutex);
+void interpolatePose(const void* component, const void* mesh, const void* animation, bool evaluated,
+                     PoseArray& pose, const VisualFrame& evaluationStart, FighterTarget fighter) {
+    auto& h = histories[fighter.slot].history;
+    ExclusiveLock lock(h.lock);
     const auto frame = visualFrame();
+    const auto current = fighterMesh(component);
     if (frame.scene != evaluationStart.scene || frame.tick != evaluationStart.tick ||
-        fighterMeshIdentity(component) != identity)
+        current.objectId != fighter.objectId || current.slot != fighter.slot)
         return;
+    const auto identity = fighter.objectId;
     // GetPredictedLODLevel reads this int in the supported build (0x4B16E65).
     const int lod = *reinterpret_cast<const int*>(static_cast<const std::uint8_t*>(component) + 0x790);
     const auto count = static_cast<std::size_t>(pose.count);
     const auto bytes = count * sizeof(Transform);
-    auto& h = historyFor(component, frame.scene);
     const bool sameMesh = h.component == component && h.identity == identity && h.scene == frame.scene && h.mesh == mesh &&
                           h.animation == animation && h.lod == lod && h.current.size() == count;
     if (sameMesh && frame.tick < h.tick)
@@ -92,7 +94,6 @@ void interpolatePose(const void* component, const void* mesh, const void* animat
         h.lod = lod;
         h.scene = frame.scene;
         h.tick = frame.tick;
-        h.used = ++lastUsed;
         h.hasPair = false;
         return;
     }
@@ -105,7 +106,6 @@ void interpolatePose(const void* component, const void* mesh, const void* animat
         h.tick = frame.tick;
         h.hasPair = true;
     }
-    h.used = ++lastUsed;
     if (!h.hasPair)
         return;
 
@@ -120,15 +120,15 @@ void interpolatePose(const void* component, const void* mesh, const void* animat
 
 void processPose(void* component, void* mesh, void* animation, bool evaluate, PoseArray* spaceBases,
                  void* boneSpace, void* rootTranslation, void* curves, void* attributes) {
-    const auto identity = fighterMeshIdentity(component);
-    const VisualFrame start = identity ? visualFrame() : VisualFrame{};
+    const auto fighter = fighterMesh(component);
+    const VisualFrame start = fighter.objectId ? visualFrame() : VisualFrame{};
     reinterpret_cast<ProcessPose>(originalPose)(component, mesh, animation, evaluate, spaceBases,
                                                boneSpace, rootTranslation, curves, attributes);
     if (start.tick == 0 || !component || !mesh || !spaceBases || !spaceBases->data ||
         spaceBases->count <= 0 || spaceBases->count > spaceBases->capacity)
         return;
     try {
-        interpolatePose(component, mesh, animation, evaluate, *spaceBases, start, identity);
+        interpolatePose(component, mesh, animation, evaluate, *spaceBases, start, fighter);
     } catch (const std::bad_alloc&) {
         // The output still contains the native pose if allocating history fails.
     }

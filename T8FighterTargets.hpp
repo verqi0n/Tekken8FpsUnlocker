@@ -11,7 +11,8 @@ struct FighterTarget {
 
 // A game-thread actor callback supplies a live AActor. A zero ID means it is not a current fighter.
 FighterTarget fighterTarget(const void* actor) noexcept;
-std::uint64_t fighterMeshIdentity(const void* component) noexcept;
+// Safe on any thread. A zero ID means the component is not a current fighter's main mesh.
+FighterTarget fighterMesh(const void* component) noexcept;
 
 // Called from the game thread while the viewport world and its levels are valid.
 void refreshFighterTargets(const std::uint8_t* image, const void* world) noexcept;
