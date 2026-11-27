@@ -20,7 +20,7 @@ Every build from `main` carries a signed GitHub artifact attestation. It proves 
 gh attestation verify Tekken8FpsUnlocker.asi --repo verqi0n/Tekken8FpsUnlocker
 ```
 
-The check succeeds only for an unmodified ASI built by this repository. The output names the commit and workflow run that produced it. You can also check the INI the same way, but only before you edit it. The repository's [Attestations](https://github.com/verqi0n/Tekken8FpsUnlocker/attestations) page lists every signed build.
+The check succeeds only for an unmodified ASI built by this repository. The output names the commit and workflow run that produced it. The repository's [Attestations](https://github.com/verqi0n/Tekken8FpsUnlocker/attestations) page lists every signed build.
 
 ## Configure the FPS limit
 
@@ -48,4 +48,4 @@ From the repository root, run the following in PowerShell or Command Prompt.
 ctest --test-dir build -C Release --output-on-failure --no-tests=error
 ```
 
-The script writes the Release build to `Tekken8FpsUnlocker.asi` in the repository root, alongside the INI. GitHub Actions builds with Visual Studio 2026, runs the core tests, then attests and packages both files.
+The script writes the Release build to `Tekken8FpsUnlocker.asi` in the repository root, alongside the INI. GitHub Actions builds with Visual Studio 2026, runs the core tests, attests the ASI and packages it with the INI.
