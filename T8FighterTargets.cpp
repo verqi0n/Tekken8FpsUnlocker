@@ -1,8 +1,8 @@
 #include "T8FighterTargets.hpp"
+#include "T8GameObject.hpp"
 
 #include <atomic>
 #include <chrono>
-#include <cstddef>
 
 namespace tekken8 {
 namespace {
@@ -11,11 +11,6 @@ namespace {
 constexpr std::uintptr_t fighterClassRva = 0x9935C10;
 constexpr std::uintptr_t objectArrayRva = 0x9A62430;
 constexpr std::uint32_t excludedFlags = 0x10 | 0x8000 | 0x10000; // CDO, BeginDestroyed, FinishDestroyed
-
-template<class T>
-T field(const void* object, std::size_t offset) noexcept {
-    return *reinterpret_cast<const T*>(static_cast<const std::uint8_t*>(object) + offset);
-}
 
 struct ObjectArray {
     const void* const* data;
@@ -46,16 +41,6 @@ const void* lastWorld = nullptr;
 const std::uint8_t* objectImage = nullptr;
 thread_local bool isTargetThread = false;
 std::chrono::steady_clock::time_point nextSearch{};
-
-bool isCharacterClass(const void* actor, const void* characterClass) noexcept {
-    // UClass::IsChildOf uses FStructBaseChain in this build.
-    const auto* cls = field<const void*>(actor, 0x10);
-    const auto depth = field<std::int32_t>(characterClass, 0x38);
-    if (!cls || depth < 0 || depth > field<std::int32_t>(cls, 0x38))
-        return false;
-    const auto chain = field<const void* const*>(cls, 0x30);
-    return chain && chain[depth] == static_cast<const std::uint8_t*>(characterClass) + 0x30;
-}
 
 // FUObjectItem::SerialNumber changes when an object-array slot is recycled.
 // Read only after obtaining the actor from its live level or actor callback.
@@ -88,7 +73,7 @@ void findFighters(const std::uint8_t* image, ObjectArray levels, const void* cha
         const auto actors = field<ObjectArray>(level, 0x98);
         for (std::int32_t actorIndex = 0; actorIndex < actors.count(); ++actorIndex) {
             const auto* actor = actors.at(actorIndex);
-            if (!actor || !isCharacterClass(actor, characterClass) || actorUnavailable(actor))
+            if (!hasClass(actor, characterClass) || actorUnavailable(actor))
                 continue;
             const auto player = field<std::uint32_t>(actor, 0x7AC);
             if (player < 2 && !fighters[player].actor) {
@@ -149,7 +134,7 @@ void refreshFighterTargets(const std::uint8_t* image, const void* world) noexcep
         const auto* level = lastWorld == world ? levels.at(cached.levelIndex) : nullptr;
         const auto* actor = level ? field<ObjectArray>(level, 0x98).at(cached.actorIndex) : nullptr;
         if (!actor || actor != cached.actor || objectId(image, actor) != cached.objectId ||
-            !isCharacterClass(actor, characterClass) || actorUnavailable(actor) || field<std::uint32_t>(actor, 0x7AC) != i) {
+            !hasClass(actor, characterClass) || actorUnavailable(actor) || field<std::uint32_t>(actor, 0x7AC) != i) {
             if (cached.actor) {
                 activeMeshes[i].store(nullptr);
                 nextSearch = {};
